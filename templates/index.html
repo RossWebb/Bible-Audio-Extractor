@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Bible Audio Extractor</title>
+    <style>
+        body { font-family: sans-serif; padding: 40px; background: #f4f4f9; }
+        .card { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); max-width: 500px; margin: auto; }
+        .settings { border-left: 5px solid #007bff; margin-bottom: 20px; }
+        button { width: 100%; padding: 10px; margin: 10px 0; border-radius: 4px; border: 1px solid #ccc; background: #007bff; color: white; border: none; cursor: pointer; font-weight: bold; }
+        .path-display { font-size: 11px; color: #666; background: #eee; padding: 5px; margin-bottom: 10px; border-radius: 3px; overflow: hidden; text-overflow: ellipsis; }
+        #status { font-weight: bold; padding: 10px; margin-top: 10px; border-radius: 4px; min-height: 20px; }
+        .download-link { color: #007bff; font-weight: bold; text-decoration: none; display: inline-block; margin-bottom: 10px; }
+    </style>
+</head>
+<body>
+    <div class="card settings">
+        <button onclick="setPath('project')" style="background:#f8f9fa; color:#333; border:1px solid #ddd;">📂 Set SFM Folder</button>
+        <div id="p_disp" class="path-display">{{ p_path or 'Not Set' }}</div>
+        
+        <button onclick="setPath('audio')" style="background:#f8f9fa; color:#333; border:1px solid #ddd;">🎵 Set Audio Folder</button>
+        <div id="a_disp" class="path-display">{{ a_path or 'Not Set' }}</div>
+    </div>
+
+    <div class="card">
+        <h2>Bulk Extractor</h2>
+        
+        <label for="ref_list">Reference List (One per line):</label>
+        <textarea id="ref_list" rows="8" 
+            placeholder="Exodus 1:1-5&#10;Exodus 5:1, 4, 8-10&#10;Galatians 1:3"
+            style="width: 100%; font-family: monospace; padding: 10px; border-radius: 4px; border: 1px solid #ccc; box-sizing: border-box;"></textarea>
+        
+        <div style="display:flex; gap:15px; margin-top: 15px; align-items: center;">
+            <div style="flex:1">
+                <label style="display:block; font-size: 0.9em;">Gap (sec):</label>
+                <input type="number" id="bridge_gap" value="{{ gap }}" step="0.1" style="width: 60px; padding: 5px;">
+            </div>
+            <div style="flex:2">
+                <label style="display:flex; align-items: center; gap: 8px; cursor: pointer; font-size: 0.9em;">
+                    <input type="checkbox" id="use_fades" {{ 'checked' if fades else '' }}> 
+                    <span>Apply Micro-Fades</span>
+                </label>
+            </div>
+        </div>
+
+        <button id="btn" onclick="runBulkProcess()" style="margin-top: 20px;">Build Audacity Project</button>
+        <div id="status"></div>
+    </div>
+
+<script>
+    async function setPath(type) {
+        const response = await fetch(`/set_path/${type}`);
+        const data = await response.json();
+        if (data.status === 'success') { location.reload(); }
+    }
+
+    function setStatus(msg, isError = false) {
+        const s = document.getElementById('status');
+        s.style.color = isError ? "#e74c3c" : "#2ecc71";
+        s.innerText = msg;
+    }
+
+    async function runBulkProcess() {
+        const btn = document.getElementById('btn');
+        const refs = document.getElementById('ref_list').value;
+        const gapVal = document.getElementById('bridge_gap').value;
+        const fadesVal = document.getElementById('use_fades').checked;
+        
+        if (!refs.trim()) { setStatus("Enter references!", true); return; }
+
+        btn.disabled = true;
+        btn.innerText = "Processing...";
+        setStatus("Working...");
+
+        try {
+            const response = await fetch('/extract_bulk', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    references: refs,
+                    gap: parseFloat(gapVal),
+                    fades: fadesVal
+                })
+            });
+            const data = await response.json();
+            if (data.status === 'success') {
+                btn.innerText = "Done!";
+                btn.style.background = "#2ecc71";
+                document.getElementById('status').innerHTML = `
+                    <div style="margin-top:10px; border:2px solid #2ecc71; padding:20px; border-radius:8px; text-align: center;">
+                        <h3 style="color: #166534; margin-top: 0;">✅ Success</h3>
+                        <a href="${data.audio_url}" class="download-link" style="font-size: 1.1em;">⬇️ Download MP3</a><br><br>
+                        <a href="${data.label_url}" class="download-link" style="font-size: 1.1em;">⬇️ Download Labels</a>
+                    </div>`;
+            } else { setStatus(data.message, true); btn.style.background = "#e74c3c"; }
+        } catch (e) { setStatus("Error connecting to server", true); }
+        finally { btn.disabled = false; }
+    }
+
+    document.getElementById('ref_list').addEventListener('keydown', function(e) {
+        if (e.ctrlKey && e.key === 'Enter') { runBulkProcess(); }
+    });
+</script>
+</body>
+</html>
