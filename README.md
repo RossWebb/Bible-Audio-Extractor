@@ -81,7 +81,7 @@ The following logic is handled within the `get_refined_times` function to calcul
 if v_start in v_list and start_ts is None:
     raw_s = float(s)
     # Verse 1 starts tight; subsequent verses get 1 second of lead-in
-    start_ts = raw_s + 0.1 if v_list[0] == 1 else max(0, raw_s - 1.0)
+    start_ts = raw_s + 0.1 if v_list[0] == 1 else raw_s - 1.0
 
 if v_end in v_list:
     # Small buffer added to the end timestamp to avoid clipping
