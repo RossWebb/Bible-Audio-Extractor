@@ -1,1 +1,1 @@
-Install Flask
+Flask
