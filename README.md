@@ -86,3 +86,24 @@ if v_start in v_list and start_ts is None:
 if v_end in v_list:
     # Small buffer added to the end timestamp to avoid clipping
     end_ts = float(e) + 0.1
+
+### 🔊 Audio Comfort & Transitions (Brown Noise)
+
+To prevent the "vacuum" effect of absolute silence between clips, the script generates a synthetic ambient bridge. 
+
+* **Brown Noise vs. White Noise:** We use brown noise because it has much higher energy at lower frequencies, making it sound more like natural "room tone" or wind compared to the harsh hiss of white noise.
+* **Amplitude (a=0.1):** The volume is set to a low threshold to remain unobtrusive while providing a continuous sonic bed for the sequence.
+
+#### **Implementation Snippet**
+Generated via FFmpeg's `lavfi` (Libavfilter) input:
+
+```python
+# Generates a bridge of a specific duration (CURRENT_GAP)
+# c=brown: The noise color
+# r=44100: Matching the project sample rate
+# a=0.1: Low amplitude for subtle background presence
+subprocess.run([
+    "ffmpeg", "-y", "-f", "lavfi", 
+    "-i", f"anoisesrc=d={CURRENT_GAP}:c=brown:r=44100:a=0.1", 
+    "-ac", "1", bridge_path
+], check=True)
