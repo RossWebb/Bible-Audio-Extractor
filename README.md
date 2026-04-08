@@ -58,3 +58,31 @@ You need a modern version of Python (3.10 or newer) to run the Flask web applica
 * **Persistence**: Your folder paths and preferences are saved in a local `settings.json` file so you don't have to re-enter them.
 * **Aeneas Detection**: The script automatically scans for Aeneas in `C:\aeneas`, `C:\Python37-32`, and standard SAB install locations.
 * **Privacy Note**: Your personal folder paths and generated audio files are automatically kept on your computer. They are never uploaded to GitHub or shared with others.
+
+  ---
+
+  ### ⏳ Timing & Padding Logic
+
+To ensure the extracted audio clips feel natural and provide a seamless listening experience, the script applies specific offsets during the timestamp refinement process. These adjustments prevent "choppy" starts and "clipped" ends.
+
+#### **Adjustment Parameters**
+
+| Event | Logic | Offset | Rationale |
+| :--- | :--- | :--- | :--- |
+| **Chapter Start** | Verse 1 | `+ 0.1s` | Clips tightly to the first spoken word, skipping leading silence. |
+| **Middle Start** | Verse > 1 | `- 1.0s` | Provides a "breath" or lead-in, ensuring the start isn't abrupt. |
+| **Verse End** | Range End | `+ 0.1s` | Adds a micro-buffer to prevent the final syllable from being truncated. |
+
+#### **Implementation Snippet**
+The following logic is handled within the `get_refined_times` function to calculate the `start_ts` and `end_ts` used by FFmpeg for extraction:
+
+```python
+# Refinement logic for natural-sounding clips
+if v_start in v_list and start_ts is None:
+    raw_s = float(s)
+    # Verse 1 starts tight; subsequent verses get 1 second of lead-in
+    start_ts = raw_s + 0.1 if v_list[0] == 1 else max(0, raw_s - 1.0)
+
+if v_end in v_list:
+    # Small buffer added to the end timestamp to avoid clipping
+    end_ts = float(e) + 0.1
