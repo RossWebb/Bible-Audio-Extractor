@@ -111,9 +111,14 @@ def get_refined_times(map_path, v_start, v_end):
                 try: v_list = [int(v_label)]
                 except: pass
             
-            if v_start in v_list and start_ts is None:
+            # If it's the start of the chapter, we reach back further to catch the 
+            # announcement and the first word, regardless of Aeneas drift.
+ if v_start in v_list and start_ts is None:
                 raw_s = float(s)
-                start_ts = raw_s + 0.1 if v_list[0] == 1 else raw_s - 1.0
+                # This one line handles both cases:
+                # 1. Verse 1: Tight 0.2s lead-in to skip the chapter heading
+                # 2. Others: Natural 1.5s lead-in for transitions
+                start_ts = max(0, raw_s - 0.2) if v_list[0] == 1 else max(0, raw_s - 1.5)
             if v_end in v_list:
                 end_ts = float(e) + 0.1
     return start_ts, end_ts
@@ -148,7 +153,7 @@ def extract_bulk():
 
     if not tasks: return jsonify({"status": "error", "message": "No valid references found."})
 
-    # Validate book and chapter
+    # --- PRE-VALIDATION ---
     for t in tasks:
         code = REVERSE_MAP.get(t['book'])
         if not code: return jsonify({"status": "error", "message": f"Book '{t['book']}' not recognized."})
@@ -159,7 +164,9 @@ def extract_bulk():
 
     combined_files, labels, current_offset = [], [], 0.0
     bridge_path = os.path.join(OUTPUT_DIR, "bridge.mp3")
-    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"anoisesrc=d={CURRENT_GAP}:c=brown:r=44100:a=0.08", "-ac", "1", bridge_path], check=True)
+    
+    # Generate the Brown Noise bridge
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", f"anoisesrc=d={CURRENT_GAP}:c=brown:r=44100:a=0.1", "-ac", "1", bridge_path], check=True)
 
     try:
         for i, t in enumerate(tasks):
@@ -167,28 +174,25 @@ def extract_bulk():
             audio_file = get_audio_file(code, t['chap'])
             map_path = os.path.join(OUTPUT_DIR, f"map_{code}_{t['chap']}.tsv")
             
+            # --- AENEAS ALIGNMENT PHASE ---
             if not os.path.exists(map_path):
                 target_sfm = next((f for f in os.listdir(PROJECT_PATH) if code in f.upper() and f.upper().endswith(".SFM")), None)
                 sync_lines = [f"INTRO|{t['book']}", f"ANNOUNCE|Chapter {t['chap']}"]
+                
                 with open(os.path.join(PROJECT_PATH, target_sfm), 'r', encoding='utf-8', errors='ignore') as f_sfm:
                     curr_c = 0
                     for line in f_sfm:
                         c_m = re.match(r'\\c\s+(\d+)', line)
                         if c_m: curr_c = int(c_m.group(1))
                         if curr_c == t['chap']:
-                            # We use finditer to catch multiple \v markers on a single line
+                            # Using the robust global search to find multiple verses on one line
                             verses = re.finditer(r'\\v\s+([\d-]+)[\s\xa0]+(.*?)(?=\\v\s+[\d-]|\\p|\\c|\\s|$)', line)
-                            
                             for match in verses:
-                                v_range = match.group(1)
-                                raw_text = match.group(2)
-                                
-                                # Aggressive cleaning of cross-refs and footnotes
+                                v_range, raw_text = match.group(1), match.group(2)
                                 clean = re.sub(r'\\f\s+.*?\\f\*', '', raw_text)
                                 clean = re.sub(r'\\x\s+.*?\\x\*', '', clean)
                                 clean = re.sub(r'\\[a-z0-9-]+\*?\s?', '', clean)
                                 clean = clean.replace('*', '').strip()
-                                
                                 if clean:
                                     sync_lines.append(f"GAP_{v_range}|---")
                                     sync_lines.append(f"{v_range}|{clean}")
@@ -197,49 +201,65 @@ def extract_bulk():
                 with open(temp_sync_path, "w", encoding="utf-8") as f_temp:
                     for sl in sync_lines: f_temp.write(sl + "\n")
                 
-                cfg = "task_language=en|is_text_type=parsed|os_task_file_format=tsv|task_adjust_boundary_percent=50"
+                cfg = "task_language=epo|is_text_type=parsed|os_task_file_format=tsv|task_adjust_boundary_percent=50"
                 subprocess.run([AENEAS_PYTHON, "-m", "aeneas.tools.execute_task", audio_file, temp_sync_path, cfg, map_path], check=True)
 
+            # --- SEGMENT EXTRACTION PHASE ---
             s_ts, e_ts = get_refined_times(map_path, t['v_start'], t['v_end'])
             
-            # CRITICAL SAFETY CHECK: Prevent NoneType subtraction crash
+            # Safety check to prevent the 'float' is not iterable / NoneType error
             if s_ts is None or e_ts is None:
-                return jsonify({"status": "error", "message": f"Verse {t['v_start']} or {t['v_end']} not found in audio map."})
+                print(f"⚠️ Warning: {t['book']} {t['chap']}:{t['v_start']} not found in map. Skipping.")
+                continue
 
             duration = e_ts - s_ts
             temp_seg = os.path.join(OUTPUT_DIR, f"seg_{i}.mp3")
+            
+            # Apply fades if enabled
             fade_filter = f"afade=t=in:st=0:d=0.1,afade=t=out:st={max(0, duration-0.1)}:d=0.1" if CURRENT_FADES else "anull"
+            
             subprocess.run(["ffmpeg", "-y", "-ss", str(s_ts), "-to", str(e_ts), "-i", audio_file, "-af", fade_filter, temp_seg], check=True)
             
+            # Append this segment and its metadata
             combined_files.append(temp_seg)
-            if i < len(tasks) - 1: combined_files.append(bridge_path)
-
             v_label = f"{t['v_start']}-{t['v_end']}" if t['v_start'] != t['v_end'] else f"{t['v_start']}"
             labels.append(f"{current_offset:.6f}\t{current_offset + duration:.6f}\t{t['book']} {t['chap']}:{v_label}")
-            current_offset += (duration + CURRENT_GAP)
+            
+            # Increment current_offset for the next file + the bridge
+            if i < len(tasks) - 1:
+                combined_files.append(bridge_path)
+                current_offset += (duration + CURRENT_GAP)
+            else:
+                current_offset += duration
+
+        # --- FINAL CONCATENATION & EXPORT ---
+        if not combined_files:
+            return jsonify({"status": "error", "message": "No valid segments found to extract."})
 
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         final_mp3 = f"Sequence_{timestamp}.mp3"
         list_path = os.path.join(OUTPUT_DIR, "concat_list.txt")
+        
         with open(list_path, "w") as f_list:
             for fp in combined_files: f_list.write(f"file '{os.path.abspath(fp)}'\n")
 
         subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path, "-c:a", "libmp3lame", "-q:a", "2", os.path.join(OUTPUT_DIR, final_mp3)], check=True)
         
+        # Write Audacity Labels
         label_file = f"Audacity_Labels_{timestamp}.txt"
-        with open(os.path.join(OUTPUT_DIR, label_file), "w") as f_lab:
-            f_lab.write("\n".join(labels))
+        with open(os.path.join(OUTPUT_DIR, label_file), "w") as f_out_lab:
+            f_out_lab.write("\n".join(labels))
 
+        # Write GoldWave Cue File
         cue_file = f"GoldWave_Cues_{timestamp}.cue"
-        with open(os.path.join(OUTPUT_DIR, cue_file), "w") as f_cue:
-            f_cue.write(f'FILE "{final_mp3}" MP3\n')
+        with open(os.path.join(OUTPUT_DIR, cue_file), "w") as f_out_cue:
+            f_out_cue.write(f'FILE "{final_mp3}" MP3\n')
             for idx, label_line in enumerate(labels):
                 parts = label_line.split('\t')
                 start_time, title = float(parts[0]), parts[2]
                 m, s = int(start_time // 60), int(start_time % 60)
                 fr = int((start_time % 1) * 75)
-                # Corrected: using f_cue instead of 'f'
-                f_cue.write(f'  TRACK {idx+1:02} AUDIO\n    TITLE "{title}"\n    INDEX 01 {m:02}:{s:02}:{fr:02}\n')
+                f_out_cue.write(f'  TRACK {idx+1:02} AUDIO\n    TITLE "{title}"\n    INDEX 01 {m:02}:{s:02}:{fr:02}\n')
 
         return jsonify({
             "status": "success", 
@@ -248,7 +268,10 @@ def extract_bulk():
             "goldwave_url": f"/download/{cue_file}",
             "filename": final_mp3
         })
+
     except Exception as e:
+        import traceback
+        print(traceback.format_exc()) # Prints the exact line of the error in your terminal
         return jsonify({"status": "error", "message": str(e)})
 
 @app.route('/download/<filename>')
