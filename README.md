@@ -86,6 +86,7 @@ if v_start in v_list and start_ts is None:
 if v_end in v_list:
     # Small buffer added to the end timestamp to avoid clipping
     end_ts = float(e) + 0.1
+```
 
 ### 🔊 Audio Comfort & Transitions (Brown Noise)
 
